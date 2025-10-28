@@ -640,7 +640,7 @@ fn parse_rsync_line(line: &str, current_file: &mut String) -> Option<DownloadPro
         let mut percentage = 0u16;
         let mut speed = String::new();
 
-        for (i, part) in parts.iter().enumerate() {
+        for part in parts.iter() {
             if part.contains("/s") {
                 speed = part.to_string();
             }
@@ -790,7 +790,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     Constraint::Length(3),
                     Constraint::Length(3),
                     Constraint::Min(0),
-                    Constraint::Length(3),
+                    Constraint::Length(4),  // Increased from 3 to 4 for file name + gauge
                 ])
                 .split(f.area());
 
@@ -827,7 +827,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 }
                 Tab::Downloads => {
                     let downloads = app.downloads.lock().unwrap();
-                    format!("Active: {} | Queued: {} | Total: {}",
+                    format!("Downloading: {} | Queued: {} | Total: {}",
                         downloads.iter().filter(|d| d.status == DownloadStatus::Downloading).count(),
                         downloads.iter().filter(|d| d.status == DownloadStatus::Queued).count(),
                         downloads.len())
@@ -901,10 +901,27 @@ fn run_app<B: ratatui::backend::Backend>(
                     f.render_stateful_widget(list, main_chunks[0], &mut app.downloads_list_state);
                 }
                 Tab::History => {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+
                     let items: Vec<ListItem> = app
                         .history
                         .iter()
-                        .map(|h| ListItem::new(format!("{} ({})", h.folder_name, h.remote_path)))
+                        .map(|h| {
+                            let elapsed = now.saturating_sub(h.downloaded_at);
+                            let time_str = if elapsed < 60 {
+                                format!("{}s ago", elapsed)
+                            } else if elapsed < 3600 {
+                                format!("{}m ago", elapsed / 60)
+                            } else if elapsed < 86400 {
+                                format!("{}h ago", elapsed / 3600)
+                            } else {
+                                format!("{}d ago", elapsed / 86400)
+                            };
+                            ListItem::new(format!("{} ({}) - {}", h.folder_name, h.remote_path, time_str))
+                        })
                         .collect();
 
                     let list = List::new(items)
@@ -972,21 +989,25 @@ fn run_app<B: ratatui::backend::Backend>(
 
                     let status = Paragraph::new(app.status_message.as_str())
                         .style(Style::default().fg(Color::Yellow))
-                        .block(Block::default().borders(Borders::ALL).title("Status"));
+                        .block(Block::default().borders(Borders::ALL).title("Last task"));
                     f.render_widget(status, status_chunks[0]);
 
                     // Active download section with file name and progress gauge
                     let download_info = app.active_download_info.lock().unwrap();
                     if let Some(ref progress) = *download_info {
-                        // Split download section into file name (1 line) and gauge (remaining)
+                        // Create block first
+                        let block = Block::default().borders(Borders::ALL).title("Active Download");
+                        let inner = block.inner(status_chunks[1]);
+                        f.render_widget(block, status_chunks[1]);
+
+                        // Split inner area into file name (1 line) and gauge (1 line)
                         let download_chunks = Layout::default()
                             .direction(Direction::Vertical)
                             .constraints([
                                 Constraint::Length(1),
-                                Constraint::Min(0),
+                                Constraint::Length(1),
                             ])
-                            .margin(1)
-                            .split(status_chunks[1]);
+                            .split(inner);
 
                         // File name at top
                         let file_paragraph = Paragraph::new(progress.file_name.as_str())
@@ -1000,10 +1021,6 @@ fn run_app<B: ratatui::backend::Backend>(
                             .percent(progress.percentage)
                             .label(gauge_label);
                         f.render_widget(gauge, download_chunks[1]);
-
-                        // Render block border
-                        let block = Block::default().borders(Borders::ALL).title("Active Download");
-                        f.render_widget(block, status_chunks[1]);
                     } else {
                         // No active download
                         let empty = Paragraph::new("")
@@ -1026,7 +1043,7 @@ fn run_app<B: ratatui::backend::Backend>(
             }
         })?;
 
-        if event::poll(std::time::Duration::from_millis(100))? {
+        if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 match app.input_mode {
                     InputMode::Normal => {
