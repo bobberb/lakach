@@ -99,7 +99,7 @@ Downloads are processed in the background using `rsync -vrtzhP`, allowing you to
 
 - `ssh`
 - `rsync`
-- SSH keys configured for passwordless authentication (required)
+- SSH keys configured for passwordless authentication (recommended)
 
 ## License
 

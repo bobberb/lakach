@@ -75,6 +75,7 @@ struct App {
     remote_base_path: String,
     current_path: String,
     local_dest: String,
+    ssh_control_socket: String,
 
     // Tab navigation
     current_tab: Tab,
@@ -113,7 +114,11 @@ impl App {
         };
 
         let current_path = remote_base_path.clone();
-        let mut folders = list_remote_folders(&remote_host, &current_path)?;
+
+        // Generate SSH control socket path
+        let ssh_control_socket = format!("/tmp/lakach-ssh-{}", std::process::id());
+
+        let mut folders = list_remote_folders(&remote_host, &current_path, &ssh_control_socket)?;
         folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
 
         let mut browser_list_state = ListState::default();
@@ -126,6 +131,7 @@ impl App {
             remote_base_path,
             current_path,
             local_dest,
+            ssh_control_socket,
             current_tab: Tab::Browser,
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
@@ -370,7 +376,7 @@ impl App {
             };
 
             // List folders in the new path
-            match list_remote_folders(&self.remote_host, &self.current_path) {
+            match list_remote_folders(&self.remote_host, &self.current_path, &self.ssh_control_socket) {
                 Ok(mut folders) => {
                     folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                     self.all_folders = folders.clone();
@@ -414,7 +420,7 @@ impl App {
         };
 
         // Refresh folder list
-        match list_remote_folders(&self.remote_host, &self.current_path) {
+        match list_remote_folders(&self.remote_host, &self.current_path, &self.ssh_control_socket) {
             Ok(mut folders) => {
                 folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
                 self.all_folders = folders.clone();
@@ -467,6 +473,7 @@ impl App {
         let downloads = Arc::clone(&self.downloads);
         let local_dest = self.local_dest.clone();
         let active_info = Arc::clone(&self.active_download_info);
+        let ssh_control_socket = self.ssh_control_socket.clone();
 
         thread::spawn(move || {
             loop {
@@ -492,9 +499,16 @@ impl App {
 
                 if let Some(download) = download_to_process {
                     // Run rsync with piped output and --info=progress2 for machine-readable progress
+                    // Use SSH ControlMaster for connection reuse
+                    let ssh_cmd = format!(
+                        "ssh -o ControlMaster=auto -o ControlPath={} -o ControlPersist=600",
+                        ssh_control_socket
+                    );
                     let mut child = Command::new("rsync")
                         .arg("-vrtzhP")
                         .arg("--info=progress2")
+                        .arg("-e")
+                        .arg(&ssh_cmd)
                         .arg(&download.remote_path)
                         .arg(&local_dest)
                         .stdout(Stdio::piped())
@@ -693,11 +707,17 @@ fn parse_rsync_line(line: &str, current_file: &mut String) -> Option<DownloadPro
     None
 }
 
-fn list_remote_folders(remote_host: &str, remote_path: &str) -> io::Result<Vec<FolderInfo>> {
+fn list_remote_folders(remote_host: &str, remote_path: &str, control_socket: &str) -> io::Result<Vec<FolderInfo>> {
     let path = if remote_path.is_empty() { "." } else { remote_path };
 
-    // List folders
+    // List folders using SSH ControlMaster for connection reuse
     let output = Command::new("ssh")
+        .arg("-o")
+        .arg("ControlMaster=auto")
+        .arg("-o")
+        .arg(format!("ControlPath={}", control_socket))
+        .arg("-o")
+        .arg("ControlPersist=600")
         .arg(remote_host)
         .arg(format!(
             "find {} -maxdepth 1 -type d -not -path {}",
