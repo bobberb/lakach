@@ -1,0 +1,9 @@
+[package]
+name = "lakach"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+fuzzy-matcher = "0.3"
